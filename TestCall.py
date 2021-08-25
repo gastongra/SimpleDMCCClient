@@ -1,106 +1,137 @@
-from configparser import ConfigParser
-from time import sleep
-import logging
-from DmccClient import DmccClient
-from XMLMessages import XMLMessages
 import sys
+import configparser
+import DmccClient
+import XMLMessages
+from time import sleep
+
+
+def graceful_shutdown(dmcc_client):
+    DmccClient.logging.info('Graceful shutdown initiated ...')
+    dmcc_client.set_all_done()
+    sleep(5)
+    dmcc_client.get_conn().close()
+    DmccClient.logging.info('Graceful shutdown completed.')
+
 
 def main():
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s|%(levelname)s|%(relativeCreated)6d|%(threadName)s|%(message)s')
-    cfg = ConfigParser()
+    """
+Log Level   When it’s used
+=========   ===========================================================================
+DEBUG		Detailed information, typically of interest only when diagnosing problems.
+INFO		Confirmation that things are working as expected.
+WARNING		An indication that something unexpected happened, or indicative of some problem in the near future
+            (e.g. ‘disk space low’). The software is still working as expected.
+ERROR		Due to a more serious problem, the software has not been able to perform some function.
+CRITICAL	A serious error, indicating that the program itself may be unable to continue running.
+"""
+    DmccClient.logging.basicConfig(level=DmccClient.logging.INFO,
+                                   format='%(asctime)s|%(levelname)s|%(relativeCreated)6d|%(threadName)s|%(message)s')
+    cfg = configparser.ConfigParser()
     cfg.read('config.ini')
-    ip = cfg.get('AES','ip')
-    port = int(cfg.get('AES','port'))
-    hostname = cfg.get('AES','hostname')
-    switchConnName = cfg.get('AES','switchConnName')
-    switchName = cfg.get('AES','switchName')
-    extension = cfg.get('DialingExtension','extension')
-    password = cfg.get('DialingExtension','password')
-    logging.info("Welcome to simple dialer. We will attempt to establish a DMCC session to AES over XML to make some calls ...")
-    logging.info("opening secure connection to DMCC server")
+    ip = cfg.get('AES', 'ip')
+    port = int(cfg.get('AES', 'port'))
+    hostname = cfg.get('AES', 'hostname')
+    switch_conn_name = cfg.get('AES', 'switch_conn_name')
+    switch_name = cfg.get('AES', 'switch_name')
+    extension = cfg.get('DialingExtension', 'extension')
+    password = cfg.get('DialingExtension', 'password')
+
+    DmccClient.logging.info("Welcome! We will attempt to establish a DMCC session to AES over XML to make some calls.")
+    DmccClient.logging.info("opening secure connection to DMCC server")
+
+    # Any DMCC client must perform below actions to do 1st party call control:
+    # 1. Start Application Session
+    # 2. GetDeviceId
+    # 3. MonitorStart
+    # 4. RegisterTerminal
+    #
+    # So here we go:
+
+    dmcc_client = None
     try:
-        dmccClient = DmccClient(ip, port, hostname)
+        # connect to AES
+        dmcc_client = DmccClient.DmccClient(ip, port, hostname)
+
+        # create DMCC session
+        dmcc_client.send_request(XMLMessages.XMLMessages.get_start_app_session(), '0001')
+        session_id = dmcc_client.handle_start_app_session_response('0001', 5)
+        DmccClient.logging.info('Session created. Session ID is: ' + session_id)
+
+        # send GetDeviceId for the extension we´re controlling
+        dmcc_client.send_request(XMLMessages.XMLMessages.get_get_device_id_message(switch_name, extension), '0002')
+        my_device_id = dmcc_client.handle_get_device_id_response('0002', 5)
+
+        # Start a monitor on the controlled device
+        dmcc_client.send_request(XMLMessages.XMLMessages.get_monitor_start_message(switch_conn_name, switch_name,
+                                                                                   extension),
+                                 '0003')
+        monitor_cross_ref_id = dmcc_client.handle_monitor_start_response('0003', 5)
+        DmccClient.logging.info('Device Id: ' + my_device_id + ' monitor_cross_ref_id: ' + str(monitor_cross_ref_id))
+
+        # Register controlled device
+        dmcc_client.send_request(XMLMessages.XMLMessages.get_register_terminal_request_message(switch_conn_name,
+                                                                            switch_name, extension, password), '0005')
+        reg_terminal_response = dmcc_client.handle_register_terminal_response('0005', 60)
+        DmccClient.logging.info('RegisterTerminal Response Code:' + str(reg_terminal_response))
+
+        # send GetDeviceId for the extension we´re calling
+        dmcc_client.send_request(XMLMessages.XMLMessages.get_get_device_id_message(switch_name, '3301'), '0009')
+        called_device_id = dmcc_client.handle_get_device_id_response('0009', 5)
+
+        # Make a call!
+        dmcc_client.send_request(XMLMessages.XMLMessages.get_make_call_request_message_with_device_id(my_device_id,
+                                                                                        called_device_id), '0012')
+        call_id = dmcc_client.handle_make_call_response('0012', 5)
+        DmccClient.logging.info('MakeCall initiated. Call ID:' + str(call_id))
+
+        # If call was answered, move on with the test. Otherwise raise an ugly exception
+        call_established = dmcc_client.wait_for_established_event(call_id, 20)
+        if call_established:
+            DmccClient.logging.info('Call established.')
+        else:
+            raise DmccClient.DMCCEventTimeoutError("DMCCEventTimeoutError. CallEstablished event not received ")
+
+        # Call was answered, so play a message:
+        message = '0'
+        file_name = '0001'
+        DmccClient.logging.info('audio start')
+        dmcc_client.send_request(XMLMessages.XMLMessages.get_play_message_request_message(extension, switch_conn_name,
+                                                                             switch_name, message, file_name), '0020')
+        dmcc_client.handle_play_message_response('0020', 5)
+        audio_stop = dmcc_client.wait_for_audio_stop_event(monitor_cross_ref_id, 60)
+        if audio_stop:
+            DmccClient.logging.info('audio stop')
+        else:
+            raise DmccClient.DMCCEventTimeoutError("DMCCEventTimeoutError. AudioStopEvent not received ")
+
+    except (DmccClient.DMCCSessionError, DmccClient.DMCCResponseMissing, DmccClient.DMCCGetDeviceIdError,
+            DmccClient.DMCCMonitorStartError, DmccClient.DMCCRegisterTerminalError, DmccClient.DMCCMakeCallError,
+            DmccClient.DMCCEventTimeoutError, DmccClient.DMCCPlayMessageError) as e:
+        DmccClient.logging.info(str(e) + " Goodbye :(")
+        graceful_shutdown(dmcc_client)
+        sys.exit() 
     except Exception as e:
-        logging.debug(str(e) + " exception. Goodbye :(")
-        return
+        DmccClient.logging.info(str(e) + " exception. Goodbye :(")
+        graceful_shutdown(dmcc_client) 
+        raise
+    finally:
+        pass
 
-    #Any DMCC client must perform below actions to do 1st party call control:
-    #1. Start Application Session
-    #2. GetDeviceId
-    #3. MonitorStart
-    #4. RegisterTerminal
-    #So here we go:
-    dmccClient.sendRequest(XMLMessages.getStartAppSession(), '0001')
-    sessionID = dmccClient.handleStartAppSessionResponse('0001', 5)
-    logging.info('Session created. Session ID is: '+sessionID)
-    
-    dmccClient.sendRequest(XMLMessages.getGetDeviceIdMessage(switchName, extension), '0002')
-    myDeviceId=dmccClient.handleGetDeviceIdResponse('0002', 5)
-    if 'resourceBusy' in myDeviceId:
-        logging.info('Device is busy. Erroring out ...')
-        gracefulShutdown(dmccClient)        
-    
-    dmccClient.sendRequest(XMLMessages.getMonitorStartMessage(switchConnName, switchName, extension), '0003')
-    monitorCrossRefID=dmccClient.handleMonitorStartResponse('0003', 5)
-    logging.info('Device Id: '+myDeviceId+' monitorCrossRefID: '+str(monitorCrossRefID))
-    
-    dmccClient.sendRequest(XMLMessages.getRegisterTerminalRequestMessage(switchConnName, switchName, extension, password), '0005')
-    regTerminalResponse = dmccClient.handleRegisterTerminalResponse('0005', 60)
-    logging.info('RegisterTerminal Response Code:'+str(regTerminalResponse))
-    if regTerminalResponse != 1:
-        logging.info('Erroring out ...')
-        dmccClient.setAlldone()
-        sleep(5)
-        dmccClient.getConn().close()
-        logging.info('Emergency shutdown completed. Ending program ...')
-        sys.exit()
-    
-    dmccClient.sendRequest(XMLMessages.getGetDeviceIdMessage(switchName, '3301'), '0009')
-    calledDeviceId=dmccClient.handleGetDeviceIdResponse('0009', 5)
-    
-    dmccClient.sendRequest(XMLMessages.getMakeCallRequestMessageWithDeviceId(myDeviceId, calledDeviceId), '0012')
-    callId = dmccClient.handleMakeCallResponse('0012', 5)
-    if callId > 1:
-        logging.info('MakeCall initiated. Call ID:'+str(callId))
-    else:
-        logging.info('Something happenned with MakeCall. Erroring out ...')
-        dmccClient.setAlldone()
-        sleep(5)
-        dmccClient.getConn().close()
-        logging.info('Emergency shutdown completed. Ending program ...')
-        sys.exit()
-    callEstablished = dmccClient.waitForEstablishedEvent(callId, 60)
-    if callEstablished:
-        logging.info('Call established.')
-    else:
-        logging.info('call failed. Erroring out ...')
-        gracefulShutdown(dmccClient)
-    
-    message='0'
-    fileName='0001'
-    logging.info('audio start')
-    dmccClient.sendRequest(XMLMessages.getPlayMessageRequestMessage(extension, switchConnName, switchName, message, fileName), '0020')
-    logging.debug(dmccClient.readResponse('0020', 5))
-    dmccClient.waitForAudioStopEvent(monitorCrossRefID, 60)
-    logging.info('audio stop')
-    dmccClient.sendRequest(XMLMessages.getUnregisterTerminalRequestMessage(switchConnName, switchName, extension), '0030')
-    logging.debug(dmccClient.readResponse('0030', 5))
-    logging.info('station unregistered')
-    dmccClient.sendRequest(XMLMessages.getMonitorStopMessage(), '0040')
-    logging.debug(dmccClient.readResponse('0040', 5))
-    logging.info('monitor stopped')
-    sleep(2)
-    dmccClient.sendRequest(XMLMessages.getStopApplicationSessionMessage(sessionID), '0050')
+    dmcc_client.send_request(XMLMessages.XMLMessages.get_unregister_terminal_request_message(switch_conn_name,
+                                                                                    switch_name, extension), '0030')
+    DmccClient.logging.debug(dmcc_client.read_response('0030', 5))
+    DmccClient.logging.info('station unregistered')
+
+    dmcc_client.send_request(XMLMessages.XMLMessages.get_monitor_stop_message(), '0040')
+    DmccClient.logging.debug(dmcc_client.read_response('0040', 5))
+    DmccClient.logging.info('monitor stopped')
     sleep(1)
-    gracefulShutdown(dmccClient)
 
-def gracefulShutdown(dmccClient):
-        logging.info('Graceful shutdown initiated ...')
-        dmccClient.setAlldone()
-        sleep(5)
-        dmccClient.getConn().close()
-        logging.info('Graceful shutdown completed. Ending program ...')
-        sys.exit()
+    dmcc_client.send_request(XMLMessages.XMLMessages.get_stop_application_session_message(session_id), '0050')
+    sleep(1)
+    
+    graceful_shutdown(dmcc_client)
+
 
 if __name__ == '__main__':
     main()
