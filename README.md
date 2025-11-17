@@ -12,7 +12,7 @@ A Python client for interacting with Avaya AES (Application Enablement Services)
 
 ## Project Structure
 - `DmccClient.py`: Core client logic for DMCC protocol and AES communication
-- `TestCall.py`: Example script to perform a test call and play a message
+- `MakeTestCall.py`: Example script to perform a test call and play a message
 - `XMLMessages.py`: Generates required XML messages for DMCC operations
 - `config.ini` / `config.ini.template`: Configuration for AES connection and extension
 - `appsession.xml` / `appsession.xml.template`: XML template for starting an application session
