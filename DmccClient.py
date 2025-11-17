@@ -320,9 +320,43 @@ class DMCCPlayMessageError(DMCCError):
 def main():
     logging.basicConfig(level=logging.DEBUG, format='%(asctime)s|%(levelname)s|%(relativeCreated)6d|%(threadName)s|%(message)s')
     logging.info("This is DmccClient, a simple python module to interact with Avaya AES through XML DMCC API.")
-    logging.info("Do something here")
-    
-    
+    logging.info("opening secure connection to DMCC server")
+    global responses
+    ip = '10.133.93.73' #AES server´s IP address
+    port = 4722 #Secure DMCC service´s port #
+    hostname = "linpubad073.gl.avaya.com" #AES server´s FQDN
+    switch_conn_name = "CM" #switch connection name as configured in the AES server´s switch connections section
+    switch_name = "10.133.93.66" #IP address or FQDN of the CM server
+    extension = "1903"
+    password = "123456"
+    try:
+        broker = DmccClient(ip, port, hostname)
+    except Exception as e:
+        logging.debug(str(e) + " exception. Goodbye :(")
+        return
+    broker.send_request(XMLMessages.get_start_app_session(), '0001')
+    logging.debug(broker.read_response('0001', 5))
+    broker.send_request(XMLMessages.get_get_device_id_message(switch_name, extension), '0002')
+    logging.debug(broker.read_response('0002', 5))
+    broker.send_request(XMLMessages.get_monitor_start_essage(switch_conn_name, switch_name, extension), '0003')
+    logging.debug(broker.read_response('0003', 5))
+    broker.send_request(XMLMessages.get_snapshot_device_message(switch_conn_name,switch_name, extension), '0004')
+    logging.debug(broker.read_response('0004', 5))
+    broker.send_request(XMLMessages.get_register_terminal_request_message(switch_conn_name, switch_name, extension, password), '0005')
+    logging.debug(broker.read_response('0005', 15))
+    input('press any key to continue')
+    broker.send_request(XMLMessages.get_snapshot_device_message(switch_conn_name,switch_name, extension), '0007')
+    logging.debug(broker.read_response('0007', 5))
+    broker.send_request(XMLMessages.get_unregister_terminal_request_message(switch_conn_name, switch_name, extension), '0008')
+    logging.debug(broker.read_response('0008', 5))
+    broker.send_request(XMLMessages.get_monitor_stop_message(), '0009')
+    logging.debug(broker.read_response('0009', 5))
+    sleep(1)
+    broker.set_all_done()
+    sleep(5)
+    broker.get_conn().close()
+    logging.debug('Graceful shutdown completed. Ending program ...')
+
 if __name__ == '__main__':
     responses = {}
     main()
