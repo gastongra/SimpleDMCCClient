@@ -35,6 +35,7 @@ CRITICAL	A serious error, indicating that the program itself may be unable to co
     switch_name = cfg.get('AES', 'switch_name')
     extension = cfg.get('DialingExtension', 'extension')
     password = cfg.get('DialingExtension', 'password')
+    destination_extension = cfg.get('DialedExtension', 'extension')
 
     DmccClient.logging.info("Welcome! We will attempt to establish a DMCC session to AES over XML to make some calls.")
     DmccClient.logging.info("opening secure connection to DMCC server")
@@ -75,7 +76,7 @@ CRITICAL	A serious error, indicating that the program itself may be unable to co
         DmccClient.logging.info('RegisterTerminal Response Code:' + str(reg_terminal_response))
 
         # send GetDeviceId for the extension we´re calling
-        dmcc_client.send_request(XMLMessages.XMLMessages.get_get_device_id_message(switch_name, '3301'), '0009')
+        dmcc_client.send_request(XMLMessages.XMLMessages.get_get_device_id_message(switch_name, destination_extension), '0009')
         called_device_id = dmcc_client.handle_get_device_id_response('0009', 5)
 
         # Make a call!
