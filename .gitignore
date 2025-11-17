@@ -1,0 +1,5 @@
+appsession.xml
+config.ini
+__pycache__/
+*.mp3
++.wav
